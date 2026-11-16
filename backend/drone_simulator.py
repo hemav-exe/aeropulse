@@ -15,6 +15,7 @@ class Drone:
         self.color = COLORS[idx % len(COLORS)]
         self.detection_radius_m, self.speed_mps = 400.0, 15.0
         self.region_id = None
+        self.mission_id = 0
         self.reset()
 
     def reset(self):
@@ -49,6 +50,7 @@ class Drone:
 
     # ---- mission control
     def start_mission(self, kind, zones, region):
+        self.mission_id += 1
         self.targets = [self.destination] if kind == "transit" else nav.sweep_waypoints(region["bounds"])
         self.mission_type, self.path, self.path_i, self.dist_m = kind, [], 0, 0.0
         self.trail, self.status, self.note = [(self.lat, self.lon)], "FLYING", ""
@@ -157,7 +159,7 @@ class Drone:
         return {
             "id": self.id, "name": self.name, "color": self.color, "lat": round(self.lat, 6), "lon": round(self.lon, 6),
             "alt": round(self.alt, 1), "battery": round(self.battery, 1), "status": self.status, "region_id": self.region_id,
-            "mission_type": self.mission_type, "progress": self.progress,
+            "mission_type": self.mission_type, "mission_id": self.mission_id, "progress": self.progress,
             "speed": self.speed_mps if self.status == "FLYING" else 0.0, "heading": round(self.heading),
             "detection_radius_m": self.detection_radius_m, "base": r6(self.base),
             "destination": r6(self.destination) if self.destination else None,

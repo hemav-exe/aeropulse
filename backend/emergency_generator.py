@@ -6,6 +6,7 @@ import argparse
 import datetime
 import json
 import random
+from geofencing import in_any_zone
 
 DEFAULT_REGIONS = [
     {"id": "R1", "name": "Region 1 - West", "bounds": [12.950, 77.5500, 13.000, 77.5833], "color": "#38bdf8"},
@@ -59,7 +60,7 @@ class EmergencyGenerator:
         return "UNASSIGNED"
 
     # ---- generation
-    def generate_one(self, region_id=None, type=None, severity=None, lat=None, lon=None):
+    def generate_one(self, region_id=None, type=None, severity=None, lat=None, lon=None, excluded_zones=None):
         rng = self.rng
         pool = [r for r in self.enabled_regions if r in self.regions] or list(self.regions)
         region_id = region_id or rng.choice(pool)
@@ -71,10 +72,21 @@ class EmergencyGenerator:
         label, weights, descs = INCIDENT_TYPES[type]
         severity = severity or rng.choices(SEVERITIES, [weights[s] for s in SEVERITIES])[0]
         desc = rng.choice(descs)
+        excluded_zones = excluded_zones or []
         if lat is None or lon is None:
             b = self.regions[region_id]["bounds"]
             m = 0.0008                                          # ~90 m margin from region edges
-            lat, lon = rng.uniform(b[0] + m, b[2] - m), rng.uniform(b[1] + m, b[3] - m)
+            # Try several candidate locations so randomly generated incidents never
+            # appear inside an operator-defined no-fly zone.
+            for _ in range(500):
+                candidate = (rng.uniform(b[0] + m, b[2] - m), rng.uniform(b[1] + m, b[3] - m))
+                if not in_any_zone(candidate[0], candidate[1], excluded_zones):
+                    lat, lon = candidate
+                    break
+            else:
+                raise ValueError(f"No available emergency location in {region_id}; its area may be covered by no-fly zones")
+        elif in_any_zone(lat, lon, excluded_zones):
+            raise ValueError("Emergency location is inside a no-fly zone")
         self.counter += 1
         inc = {
             "id": f"INC-{self.counter:04d}", "type": type, "type_label": label,

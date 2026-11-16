@@ -2,7 +2,6 @@
 import asyncio
 import datetime
 import os
-import random
 import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -98,7 +97,7 @@ async def sim_loop():
         dt, last = (now - last) * sim.scale, now
         try:
             sim.add(sim.fleet.step(dt, sim.zlist()))
-            sim.add(sim.detector.step(sim.fleet, sim.generator.list(), dt))
+            sim.add(sim.detector.step(sim.fleet, sim.generator.list(), dt, sim.zlist()))
             await sim.broadcast()
         except Exception as e:                      # keep the loop alive
             print("sim error:", repr(e))
@@ -166,6 +165,10 @@ class GenCfg(BaseModel):
     seed: Optional[int] = None
     interval_s: Optional[float] = None
     enabled_regions: Optional[List[str]] = None
+
+
+class GenBatchIn(GenIn):
+    count: int = 1
 
 
 class Scale(BaseModel):
@@ -293,7 +296,12 @@ async def fleet_action(action: str):
 
 # ---------------------------------------------------------------- no-fly zones
 def _zone_changed(zone, verb):
-    sim.emit(f"zone_{verb}", f"No-fly zone '{zone['name']}' ({zone['id']}) {verb}", "WARN" if verb != "removed" else "INFO")
+    sim.emit(f"zone_{verb}", f"No-fly zone '{zone['name']}' ({zone['id']}) {verb}", "INFO")
+    # Incidents newly covered by a restricted zone are excluded from this mission.
+    if verb in ("added", "edited"):
+        for inc in sim.generator.list():
+            if inc["detection_status"] == "PENDING" and geo.in_any_zone(inc["lat"], inc["lon"], sim.zlist()):
+                inc.update(detection_status="EXCLUDED", status="EXCLUDED", excluded_reason="Located inside a no-fly zone")
     sim.add(sim.fleet.on_zones_changed(sim.zlist()))
 
 
@@ -343,12 +351,29 @@ async def del_zone(zid: str):
 @app.post("/api/generator/generate")
 async def gen_one(g: GenIn):
     try:
-        inc = sim.generator.generate_one(g.region_id, g.type, g.severity, g.lat, g.lon)
+        inc = sim.generator.generate_one(g.region_id, g.type, g.severity, g.lat, g.lon, sim.zlist())
     except ValueError as e:
         raise HTTPException(400, str(e))
     sim.emit("incident_generated", f"{inc['id']} ({inc['type_label']}) generated in {inc['region']} - waiting for detection",
              "QUIET", incident=inc["id"])
     return inc
+
+
+@app.post("/api/generator/generate-batch")
+async def gen_batch(g: GenBatchIn):
+    count = max(1, min(50, g.count))
+    created = []
+    try:
+        for _ in range(count):
+            created.append(sim.generator.generate_one(g.region_id, g.type, g.severity, excluded_zones=sim.zlist()))
+    except ValueError as e:
+        # Keep any valid incidents already created, but report why generation stopped.
+        if not created:
+            raise HTTPException(400, str(e))
+    for inc in created:
+        sim.emit("incident_generated", f"{inc['id']} ({inc['type_label']}) generated in {inc['region']} - waiting for drone sweep",
+                 "QUIET", incident=inc["id"])
+    return {"ok": True, "created": created, "count": len(created)}
 
 
 @app.post("/api/generator/start")
@@ -436,59 +461,41 @@ async def rep_one_json(iid: str):
 
 
 # ---------------------------------------------------------------- demo mode (drives the real endpoints/logic)
-def _point_ahead(drone, region, min_ahead=800.0):
-    """First point on the drone's planned route (>= min_ahead m away) that lies inside the region."""
-    r = drone.route_points()
-    if len(r) < 2:
-        return None
-    b = region["bounds"]
-    for dist, lat, lon in nav.sample_route(r, 100.0):
-        if dist >= min_ahead and b[0] + 0.001 < lat < b[2] - 0.001 and b[1] + 0.001 < lon < b[3] - 0.001:
-            return lat, lon
-    return None
-
-
 def _step(text):
     sim.demo_steps.append({"t": now_iso(), "text": text})
     sim.emit("demo", f"DEMO: {text}", "INFO")
 
 
 async def demo_runner():
+    """Run a sweep using operator-prepared zones and incidents; never reset setup."""
     try:
-        sim.reset(seed=42, cancel_demo=False)
-        sim.scale = 25.0
-        _step("1. Dashboard ready - 3 simulated drones on the map")
+        sim.generator.stop_auto()
+        sim.scale = max(sim.scale, 25.0)  # keep the live demo sweep moving at presentation speed
+        sim.demo_steps = []
+        _step(f"1. Pre-flight setup retained: {len(sim.zlist())} no-fly zone(s), {len(sim.generator.list())} emergency/emergencies")
+        # Default region assignments are applied only where the operator has not
+        # already assigned a drone, preserving all existing operator configuration.
         for d, r in zip(sim.fleet.drones.values(), ["R1", "R2", "R3"]):
-            await assign(d.id, Region(region_id=r))
-        _step("2. Each drone assigned a different inspection region (R1, R2, R3)")
-        await fleet_action("start")
-        _step("3. All three drone missions started")
-        await asyncio.sleep(6)
-        d1 = sim.fleet.drones["DRN-1"]
-        pt = _point_ahead(d1, sim.fleet.regions["R1"], 1200.0) or (d1.lat + 0.01, d1.lon)
-        z = await add_zone(ZoneIn(name="Demo NFZ - Event airspace", reason="Temporary restriction (demo)",
-                                  shape="circle", center=list(pt), radius_m=450))
-        _step(f"4. No-fly zone {z['id']} drawn on {d1.name}'s planned route - affected route recalculated automatically")
-        await asyncio.sleep(4)
-        sim.generator.start_auto(12.0, time.monotonic())
-        _step("5. Python random emergency generator started (auto mode, seed 42)")
-        d2 = sim.fleet.drones["DRN-2"]
-        pt = _point_ahead(d2, sim.fleet.regions["R2"])
-        rnd = random.Random(7)
-        kw = {}
-        if pt:
-            kw = dict(lat=pt[0] + rnd.uniform(-0.0008, 0.0008), lon=pt[1] + rnd.uniform(-0.0008, 0.0008))
-        inc = await gen_one(GenIn(region_id="R2", type="BRIDGE_CRACK", severity="HIGH", **kw))
-        _step(f"6. Bridge crack {inc['id']} generated in {d2.name}'s region - pending, not yet detected")
-        for _ in range(900):
-            await asyncio.sleep(0.5)
-            if inc["detection_status"] == "DETECTED":
+            if not d.region_id:
+                await assign(d.id, Region(region_id=r))
+        _step("2. Drone inspection regions confirmed; operator-defined no-fly zones remain active")
+        started = 0
+        for d in sim.fleet.drones.values():
+            if d.status == "PAUSED":
+                sim.add(d.resume())
+            elif d.status in ("IDLE", "COMPLETED") and d.region_id:
+                _start(d, "inspect")
+                started += 1
+        _step(f"3. Autonomous region sweep started for {started} drone(s); existing emergencies queued for detection")
+        deadline = time.monotonic() + 1800
+        while time.monotonic() < deadline:
+            inspection_drones = [d for d in sim.fleet.drones.values() if d.mission_type == "inspect" and d.region_id]
+            if inspection_drones and all(d.status in ("COMPLETED", "BLOCKED", "E_STOP", "ERROR") for d in inspection_drones):
                 break
-        else:
-            _step("Timed out waiting for detection")
-            return
-        _step(f"7. {inc['first_detected_by']} detected {inc['id']} at {inc['lat']:.5f}, {inc['lon']:.5f} - alert sent to ground station")
-        _step("8. Open Reports & History to download the incident report (CSV / PDF)")
+            await asyncio.sleep(0.5)
+        pending = [i for i in sim.generator.list() if i["detection_status"] == "PENDING"]
+        _step(f"4. Sweep finished. {sum(i['detection_status']=='DETECTED' for i in sim.generator.list())} incident(s) detected; {len(pending)} pending; restricted-zone incidents excluded")
+        _step("5. Open Reports & History to review or download the incident report (CSV / PDF)")
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -530,4 +537,4 @@ app.mount("/", StaticFiles(directory=FRONTEND, html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    uvicorn.run("main:app", host="127.0.0.1", port=8000)
