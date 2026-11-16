@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>AeroPulse AI - Ground Station (SIMULATION)</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<style>
+  body{background:#0a1226;color:#e2e8f0;font-family:ui-sans-serif,system-ui,"Segoe UI",sans-serif}
+  .drone-ic{width:26px;height:26px;border-radius:50%;color:#06101f;font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;border:2px solid #0a1226}
+  .hnd{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444}
+  .pulse{width:18px;height:18px;border-radius:50%;animation:pl 1.2s infinite;border:2px solid #fff}
+  @keyframes pl{0%{box-shadow:0 0 0 0 rgba(239,68,68,.8)}100%{box-shadow:0 0 0 18px rgba(239,68,68,0)}}
+  .pick .leaflet-grab{cursor:crosshair}
+  .leaflet-container{background:#cfe3ea}
+  .drone-label{background:#0a1226;color:#e2e8f0;border:1px solid #38bdf8;font-weight:600;font-size:11px;padding:1px 5px}
+  .leaflet-tooltip{background:#101b38;color:#e2e8f0;border:1px solid #334155}
+  @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react" src="app.jsx"></script>
+</body>
+</html>
